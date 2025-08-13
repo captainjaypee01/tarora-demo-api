@@ -4,7 +4,7 @@ import uuid
 from queue import Queue, Empty
 from typing import List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlmodel import select
 import paho.mqtt.client as mqtt
@@ -65,7 +65,8 @@ def update_device(device_id: str, body: DeviceUpdate):
 @app.get("/api/telemetry", response_model=List[TelemetryOut])
 def get_telemetry(device_id: str, limit: int = 200):
     with get_session() as session:
-        stmt = select(Telemetry).where(Telemetry.device_id == device_id).order_by(Telemetry.id.desc()).limit(limit)
+        stmt = select(Telemetry).where(Telemetry.device_id == device_id)
+        stmt = stmt.order_by(Telemetry.ts.desc()).limit(limit)
         rows = session.exec(stmt).all()
         return [TelemetryOut(device_id=r.device_id, ts=r.ts, data=r.data) for r in rows]
     
@@ -110,9 +111,10 @@ def faults_summary(since_hours: int = 24):
         return agg
 
 @app.post("/api/insights")
-def insights(req: InsightRequest):
-    summary = generate_insight(req.device_id, req.horizon_minutes)
-    return JSONResponse({"summary": summary})
+def insights(req: InsightRequest, debug: bool = Query(False)):
+    result = generate_insight(req.device_id, req.horizon_minutes, debug=debug)
+    # When debug=True, `result` is already a dict with { summary, ...meta }
+    return JSONResponse(result if debug else {"summary": result})
 
 @app.post("/api/commands", response_model=CommandResponse)
 def post_command(cmd: CommandRequest):
