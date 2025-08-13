@@ -54,7 +54,9 @@ def generate_insight(device_id: str | None, horizon_minutes: int) -> str:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
             )
+            print(f"[INFO] {resp}", flush=True)
             return resp.choices[0].message.content or _rule_summary(points)
-        except Exception:
+        except Exception as e:
+            print(e)
             return _rule_summary(points)
     return _rule_summary(points)

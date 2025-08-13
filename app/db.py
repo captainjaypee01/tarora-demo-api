@@ -7,4 +7,5 @@ def init_db():
     SQLModel.metadata.create_all(engine)
 
 def get_session():
-    return Session(engine)
+    # 👇 prevent attribute expiration so simple reads after commit are safe
+    return Session(engine, expire_on_commit=False)

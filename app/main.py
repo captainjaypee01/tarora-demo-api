@@ -29,7 +29,11 @@ mqtt_client: mqtt.Client | None = None
 async def on_startup():
     global mqtt_client
     init_db()
-    mqtt_client = start_mqtt(message_queue)
+    try:
+        mqtt_client = start_mqtt(message_queue)
+    except Exception as e:
+        print(f"[MQTT] failed to start: {e}", flush=True)
+        mqtt_client = None
     asyncio.create_task(queue_forwarder())
 
 async def queue_forwarder():
@@ -61,9 +65,8 @@ def update_device(device_id: str, body: DeviceUpdate):
 @app.get("/api/telemetry", response_model=List[TelemetryOut])
 def get_telemetry(device_id: str, limit: int = 200):
     with get_session() as session:
-        stmt = select(Telemetry).where(Telemetry.device_id == device_id).order_by(Telemetry.ts.desc()).limit(limit)
+        stmt = select(Telemetry).where(Telemetry.device_id == device_id).order_by(Telemetry.id.desc()).limit(limit)
         rows = session.exec(stmt).all()
-        rows.reverse()
         return [TelemetryOut(device_id=r.device_id, ts=r.ts, data=r.data) for r in rows]
 
 @app.post("/api/insights")
@@ -73,41 +76,59 @@ def insights(req: InsightRequest):
 
 @app.post("/api/commands", response_model=CommandResponse)
 def post_command(cmd: CommandRequest):
-    # Ensure device exists and get type for topic
+    # Ensure device exists and capture fields while session is open
     with get_session() as session:
         d = session.get(Device, cmd.device_id)
         if not d:
             raise HTTPException(status_code=404, detail="Device not found")
+
+        d_id = d.id            # copy before session closes
+        d_type = d.type        # copy before session closes
         command_id = f"cmd_{uuid.uuid4().hex[:10]}"
-        # Save queued command
-        rec = Command(command_id=command_id, device_id=cmd.device_id, command=cmd.command, params=cmd.params, status="queued")
+
+        # queue the command in DB
+        rec = Command(
+            command_id=command_id,
+            device_id=cmd.device_id,
+            command=cmd.command,
+            params=cmd.params,
+            status="queued",
+        )
         session.add(rec)
         session.commit()
 
-    # Publish to MQTT command topic
-    topic = f"{settings.mqtt_topic_base}/{d.type}/{d.id}/command"  # e.g., simulators/thermostat/thermostat-01/command
-    payload = json.dumps({"command_id": command_id, "command": cmd.command, "params": cmd.params})
-
+    # Publish to MQTT (outside DB session is fine)
     if mqtt_client is None:
         raise HTTPException(status_code=500, detail="MQTT not initialized")
 
+    topic = f"{settings.mqtt_topic_base}/{d_type}/{d_id}/command"
+    payload = json.dumps({
+        "command_id": command_id,
+        "command": cmd.command,
+        "params": cmd.params
+    })
+
     try:
         info = mqtt_client.publish(topic, payload, qos=0, retain=False)
+        # paho v2: info.rc == mqtt.MQTT_ERR_SUCCESS (0) when queued
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise RuntimeError(f"publish rc={info.rc}")
         info.wait_for_publish()
+
         with get_session() as session:
             row = session.exec(select(Command).where(Command.command_id == command_id)).first()
             if row:
                 row.status = "sent"
                 session.add(row)
                 session.commit()
-    except Exception:
+    except Exception as e:
         with get_session() as session:
             row = session.exec(select(Command).where(Command.command_id == command_id)).first()
             if row:
                 row.status = "failed"
                 session.add(row)
                 session.commit()
-        raise HTTPException(status_code=500, detail="Failed to publish command")
+        raise HTTPException(status_code=502, detail=f"MQTT publish failed: {e}")
 
     return CommandResponse(status="queued", commandId=command_id)
 
