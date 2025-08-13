@@ -6,7 +6,7 @@ from dateutil import parser as dtparser
 import paho.mqtt.client as mqtt
 
 from .db import get_session
-from .models import Device, Telemetry
+from .models import Device, Telemetry, Event
 from .settings import settings
 
 log = logging.getLogger("mqtt")
@@ -94,11 +94,13 @@ def start_mqtt(message_queue: Queue):
             with get_session() as s:
                 d = s.get(Device, dev_id)
                 if not d:
-                    s.add(Device(id=dev_id, name=payload.get("name") or f"{dev_type}-{dev_id}", type=dev_type))
-                    s.commit()
+                    d = Device(id=dev_id, name=payload.get("name") or f"{dev_type}-{dev_id}", type=dev_type)
+                    s.add(d); s.commit()
+                    
+                dev_name = d.name
 
             ts = payload.get("ts") or payload.get("at") or datetime.utcnow().isoformat()
-            out = {"device_id": dev_id, "type": dev_type, "ts": ts}
+            out = {"device_id": dev_id, "type": dev_type, "ts": ts, "name": dev_name}
 
             if suffix == "telemetry":
                 stats["rx_tel"] += 1
@@ -117,7 +119,19 @@ def start_mqtt(message_queue: Queue):
                 out["kind"] = "event"
                 out["event"] = payload.get("event")
                 out["level"] = payload.get("level", "info")
-                if "details" in payload: out["details"] = payload["details"]
+                #if "details" in payload: out["details"] = payload["details"]
+                details = payload.get("details") or {}
+                out["details"] = details
+                # persist event for fault history
+                with get_session() as s:
+                    s.add(Event(
+                        device_id=dev_id,
+                        ts=_parse_ts(ts),
+                        level=out["level"],
+                        event=out["event"],
+                        details=details,
+                    ))
+                    s.commit()
             else:
                 return
 

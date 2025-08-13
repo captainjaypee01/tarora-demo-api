@@ -22,3 +22,11 @@ class Command(SQLModel, table=True):
     params: dict = Field(sa_column=Column(JSON))
     queued_at: datetime = Field(default_factory=datetime.utcnow)
     status: str = Field(default="queued")  # queued|sent|failed
+    
+class Event(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    device_id: str = Field(index=True, foreign_key="device.id")
+    ts: datetime = Field(default_factory=datetime.utcnow, index=True)
+    level: str = Field(default="info", index=True)     # info|alarm|warn|error
+    event: str
+    details: dict = Field(sa_column=Column(JSON), default_factory=dict)

@@ -10,8 +10,8 @@ from sqlmodel import select
 import paho.mqtt.client as mqtt
 
 from .db import init_db, get_session
-from .models import Device, Telemetry, Command
-from .schemas import DeviceOut, TelemetryOut, InsightRequest, CommandRequest, CommandResponse, DeviceUpdate
+from .models import Device, Telemetry, Command, Event
+from .schemas import DeviceOut, TelemetryOut, InsightRequest, CommandRequest, CommandResponse, DeviceUpdate, EventOut
 from .mqtt_handler import start_mqtt
 from .ws_manager import ConnectionManager
 from .ai import generate_insight
@@ -68,6 +68,46 @@ def get_telemetry(device_id: str, limit: int = 200):
         stmt = select(Telemetry).where(Telemetry.device_id == device_id).order_by(Telemetry.id.desc()).limit(limit)
         rows = session.exec(stmt).all()
         return [TelemetryOut(device_id=r.device_id, ts=r.ts, data=r.data) for r in rows]
+    
+@app.get("/api/events", response_model=List[EventOut])
+def list_events(device_id: str | None = None, level: str | None = None, limit: int = 200):
+    with get_session() as session:
+        stmt = select(Event)
+        if device_id:
+            stmt = stmt.where(Event.device_id == device_id)
+        if level:
+            stmt = stmt.where(Event.level == level)
+        stmt = stmt.order_by(Event.ts.desc()).limit(limit)
+        rows = session.exec(stmt).all()
+        # enrich with device name for convenience
+        out: list[EventOut] = []
+        for r in rows:
+            d = session.get(Device, r.device_id)
+            out.append(EventOut(
+                id=r.id, device_id=r.device_id, ts=r.ts, level=r.level, event=r.event,
+                details=r.details, name=(d.name if d else None)
+            ))
+        return out
+
+@app.get("/api/faults/summary")
+def faults_summary(since_hours: int = 24):
+    """Simple per-device alarm counts in the last N hours."""
+    from datetime import datetime, timedelta
+    since = datetime.utcnow() - timedelta(hours=since_hours)
+    with get_session() as session:
+        rows = session.exec(
+            select(Event).where(Event.ts >= since, Event.level.in_(["alarm", "error"]))
+        ).all()
+        agg: dict[str, dict] = {}
+        for e in rows:
+            entry = agg.setdefault(e.device_id, {"alarm": 0, "error": 0, "last": None})
+            entry[e.level] = entry.get(e.level, 0) + 1
+            entry["last"] = max(entry["last"] or e.ts, e.ts)
+        # attach names
+        for dev_id in list(agg.keys()):
+            d = session.get(Device, dev_id)
+            agg[dev_id]["name"] = d.name if d else dev_id
+        return agg
 
 @app.post("/api/insights")
 def insights(req: InsightRequest):

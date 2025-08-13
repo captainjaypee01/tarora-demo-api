@@ -44,16 +44,19 @@ def generate_insight(device_id: str | None, horizon_minutes: int) -> str:
 
     if settings.openai_api_key and OpenAI is not None:
         try:
+            print(settings.openai_api_key)
             client = OpenAI(api_key=settings.openai_api_key)
             prompt = (
                 "Summarize anomalies, trends, and practical checks within the following IoT telemetry JSON list. Be concise.\n\n"
                 + str(points)[:20000]
             )
-            resp = client.chat.completions.create(
+            resp = client.responses.create(
                 model=settings.openai_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
+                reasoning={"effort": "high"},
+                instructions="Talk like a Senior Data Analyst",
+                input=prompt,
             )
+            print(resp)
             print(f"[INFO] {resp}", flush=True)
             return resp.choices[0].message.content or _rule_summary(points)
         except Exception as e:

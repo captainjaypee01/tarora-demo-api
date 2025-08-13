@@ -27,3 +27,12 @@ class CommandRequest(BaseModel):
 class CommandResponse(BaseModel):
     status: str
     commandId: str
+    
+class EventOut(BaseModel):
+    id: int
+    device_id: str
+    ts: datetime
+    level: str
+    event: str
+    details: dict[str, Any] | None = None
+    name: str | None = None  # convenience for UI
